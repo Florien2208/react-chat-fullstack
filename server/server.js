@@ -39,18 +39,19 @@ app.post("/register", async (req, res) => {
         .status(400)
         .send({ message: "Username and password are required" });
     }
-    const user = new User({ username, password, role });
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = new User({ username, password: hashedPassword, role });
     await user.save();
     res.status(201).send(user);
   } catch (error) {
     console.error("Error during registration:", error);
     if (error.code === 11000) {
-      // Handle duplicate key error
       return res.status(400).send({ message: "Username already exists" });
     }
     res.status(500).send({ message: "Internal server error" });
   }
 });
+
 app.get("/messages", async (req, res) => {
   try {
     const userId = req.query.userId;
@@ -64,6 +65,7 @@ app.get("/messages", async (req, res) => {
     res.status(500).send({ message: "Internal server error" });
   }
 });
+
 app.get("/users", async (req, res) => {
   try {
     const users = await User.find();
@@ -77,29 +79,21 @@ app.get("/users", async (req, res) => {
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    console.log("Login request body:", req.body);
-
     if (!username || !password) {
-      console.log("Username or password is missing");
       return res
         .status(400)
         .send({ message: "Username and password are required" });
     }
 
     const user = await User.findOne({ username });
-    console.log("User found:", user);
-
     if (user) {
       const isPasswordValid = await bcrypt.compare(password, user.password);
-      console.log("Password validation result:", isPasswordValid);
-
       if (isPasswordValid) {
         res.status(200).send(user);
       } else {
         res.status(400).send({ message: "Invalid credentials" });
       }
     } else {
-      console.log("User not found");
       res.status(400).send({ message: "Invalid credentials" });
     }
   } catch (error) {
@@ -108,28 +102,43 @@ app.post("/login", async (req, res) => {
   }
 });
 
+const onlineUsers = new Map();
+
 io.on("connection", (socket) => {
   console.log("New client connected");
 
-  // Emit event to update online users
-  io.emit("onlineUsers", Object.keys(io.sockets.sockets));
+  socket.on("userConnected", (userId) => {
+    onlineUsers.set(userId, socket.id);
+    io.emit("onlineUsers", Array.from(onlineUsers.keys()));
+  });
 
-  // Inside the 'sendMessage' event handler
   socket.on("sendMessage", async (message) => {
     const newMessage = new Message({
       sender: message.sender,
       recipient: message.recipient,
       content: message.content,
-      timestamp: moment().toDate(), // Adding the current timestamp using Moment.js
+      timestamp: moment().toDate(),
     });
     await newMessage.save();
-    io.emit("receiveMessage", message);
+
+    // Emit the message only to the sender and recipient
+    io.to(onlineUsers.get(message.sender)).emit("receiveMessage", message);
+    const recipientSocketId = onlineUsers.get(message.recipient);
+    if (recipientSocketId) {
+      io.to(recipientSocketId).emit("receiveMessage", message);
+    }
   });
 
   socket.on("disconnect", () => {
     console.log("Client disconnected");
-    // Emit event to update online users
-    // io.emit("onlineUsers", Object.keys(io.sockets.sockets));
+    // Find and remove the disconnected user's socket
+    const userId = [...onlineUsers.entries()].find(
+      ([, socketId]) => socketId === socket.id
+    )?.[0];
+    if (userId) {
+      onlineUsers.delete(userId);
+      io.emit("onlineUsers", Array.from(onlineUsers.keys()));
+    }
   });
 });
 
