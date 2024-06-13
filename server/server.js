@@ -7,6 +7,7 @@ const User = require("./models/User");
 const Message = require("./models/Message");
 const bcrypt = require("bcrypt");
 const app = express();
+const ChatHistory = require("./models/ChatHistory");
 const moment = require("moment");
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -51,13 +52,63 @@ app.post("/register", async (req, res) => {
     res.status(500).send({ message: "Internal server error" });
   }
 });
+app.get("/chatHistory", async (req, res) => {
+  try {
+    const { sender, recipient } = req.query;
+    const query = {
+      $or: [
+        { sender, recipient },
+        { sender: recipient, recipient: sender },
+      ],
+    };
 
+    const chatHistory = await ChatHistory.find(query, { messages: 1, _id: 0 });
+
+    res.status(200).send(chatHistory);
+  } catch (error) {
+    console.error("Error fetching chat history:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
+
+app.post("/saveChatHistory", async (req, res) => {
+  try {
+    const { sender, recipient, messages } = req.body;
+
+    // Save the chat history to the database or other persistent storage
+    const chatHistory = new ChatHistory({
+      sender,
+      recipient,
+      messages: messages.map((msg) => ({
+        sender: msg.sender,
+        recipient: msg.recipient,
+        content: msg.content,
+        timestamp: msg.timestamp,
+      })),
+    });
+    await chatHistory.save();
+
+    res.status(200).send({ message: "Chat history saved successfully" });
+  } catch (error) {
+    console.error("Error saving chat history:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
 app.get("/messages", async (req, res) => {
   try {
-    const userId = req.query.userId;
-    const messages = await Message.find({
-      $or: [{ sender: userId }, { recipient: userId }],
-    }).populate("sender recipient");
+    const { sender, recipient } = req.query;
+    const query =
+      sender && recipient
+        ? {
+            $or: [
+              { sender, recipient },
+              { sender: recipient, recipient: sender },
+            ],
+          }
+        : req.query;
+
+    const messages = await Message.find(query).populate("sender recipient");
 
     res.status(200).send(messages);
   } catch (error) {
@@ -65,7 +116,6 @@ app.get("/messages", async (req, res) => {
     res.status(500).send({ message: "Internal server error" });
   }
 });
-
 app.get("/users", async (req, res) => {
   try {
     const users = await User.find();
@@ -79,15 +129,17 @@ app.get("/users", async (req, res) => {
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
+    console.log("Received login request:", req.body); // Add this line to log the request body
     if (!username || !password) {
       return res
         .status(400)
         .send({ message: "Username and password are required" });
     }
-
     const user = await User.findOne({ username });
+    console.log("Found user:", user); // Add this line to log the found user
     if (user) {
       const isPasswordValid = await bcrypt.compare(password, user.password);
+      console.log("pass",isPasswordValid)
       if (isPasswordValid) {
         res.status(200).send(user);
       } else {
@@ -113,19 +165,24 @@ io.on("connection", (socket) => {
   });
 
   socket.on("sendMessage", async (message) => {
+    const timestamp = moment().toDate();
     const newMessage = new Message({
       sender: message.sender,
       recipient: message.recipient,
       content: message.content,
-      timestamp: moment().toDate(),
+      timestamp,
     });
     await newMessage.save();
 
     // Emit the message only to the sender and recipient
-    io.to(onlineUsers.get(message.sender)).emit("receiveMessage", message);
+    const messageWithTimestamp = { ...message, timestamp };
+    io.to(onlineUsers.get(message.sender)).emit(
+      "receiveMessage",
+      messageWithTimestamp
+    );
     const recipientSocketId = onlineUsers.get(message.recipient);
     if (recipientSocketId) {
-      io.to(recipientSocketId).emit("receiveMessage", message);
+      io.to(recipientSocketId).emit("receiveMessage", messageWithTimestamp);
     }
   });
 
@@ -141,6 +198,7 @@ io.on("connection", (socket) => {
     }
   });
 });
+
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
