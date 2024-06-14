@@ -29,19 +29,20 @@ mongoose
     console.error("Error connecting to MongoDB:", error);
   });
 
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
 app.post("/register", async (req, res) => {
   try {
-    const { username, password, role } = req.body;
-    if (!username || !password) {
+    const { username, password, role, name, email } = req.body;
+    if (!username || !password || !role || !name || !email) {
       return res
         .status(400)
         .send({ message: "Username and password are required" });
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ username, password: hashedPassword, role });
+    const user = new User({ username, password, role, name, email });
     await user.save();
     res.status(201).send(user);
   } catch (error) {
@@ -129,22 +130,16 @@ app.get("/users", async (req, res) => {
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    console.log("Received login request:", req.body); // Add this line to log the request body
+    console.log("Received login request:", req.body);
     if (!username || !password) {
       return res
         .status(400)
         .send({ message: "Username and password are required" });
     }
-    const user = await User.findOne({ username });
-    console.log("Found user:", user); // Add this line to log the found user
+    const user = await User.findOne({ username, password });
+    console.log("Found user:", user);
     if (user) {
-      const isPasswordValid = await bcrypt.compare(password, user.password);
-      console.log("pass",isPasswordValid)
-      if (isPasswordValid) {
-        res.status(200).send(user);
-      } else {
-        res.status(400).send({ message: "Invalid credentials" });
-      }
+      res.status(200).send(user);
     } else {
       res.status(400).send({ message: "Invalid credentials" });
     }
@@ -153,7 +148,6 @@ app.post("/login", async (req, res) => {
     res.status(500).send({ message: "Internal server error" });
   }
 });
-
 const onlineUsers = new Map();
 
 io.on("connection", (socket) => {
